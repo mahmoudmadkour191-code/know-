@@ -14,7 +14,7 @@ from .telegram_user import TelegramUser
 
 class GeminiAgent:
     def __init__(self, api_key: str, model: str, telegram: TelegramUser, db: Database, max_steps: int = 8):
-        self.client = genai.Client(api_key=api_key)
+        self.client = genai.Client(api_key=api_key, vertexai=False)
         self.model = model
         self.telegram = telegram
         self.db = db
