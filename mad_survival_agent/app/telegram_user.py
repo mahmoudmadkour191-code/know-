@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Awaitable, Callable
+from urllib.parse import urlparse
 
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, functions
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
 from telethon.sessions import StringSession
 
@@ -19,9 +20,15 @@ class PendingLogin:
 
 
 class TelegramUser:
-    def __init__(self, api_id: int, api_hash: str, db: Database, secret_box: SecretBox,
-                 on_incoming: Callable[[object], Awaitable[None]],
-                 on_flood_wait: Callable[[int], Awaitable[None]]):
+    def __init__(
+        self,
+        api_id: int,
+        api_hash: str,
+        db: Database,
+        secret_box: SecretBox,
+        on_incoming: Callable[[object], Awaitable[None]],
+        on_flood_wait: Callable[[int], Awaitable[None]],
+    ):
         self.api_id = api_id
         self.api_hash = api_hash
         self.db = db
@@ -65,7 +72,11 @@ class TelegramUser:
             raise RuntimeError("No login is waiting for a code")
         pending = self.pending
         try:
-            await pending.client.sign_in(phone=pending.phone, code=code, phone_code_hash=pending.phone_code_hash)
+            await pending.client.sign_in(
+                phone=pending.phone,
+                code=code,
+                phone_code_hash=pending.phone_code_hash,
+            )
         except SessionPasswordNeededError:
             return False
         await self._finish_pending()
@@ -125,7 +136,11 @@ class TelegramUser:
         if not self.client:
             raise RuntimeError("Telegram account is not linked")
         results = []
-        async for msg in self.client.iter_messages(None, search=query, limit=min(max(limit, 1), 25)):
+        async for msg in self.client.iter_messages(
+            None,
+            search=query,
+            limit=min(max(limit, 1), 25),
+        ):
             text = (msg.raw_text or "").strip().replace("\n", " ")
             if not text:
                 continue
@@ -140,10 +155,81 @@ class TelegramUser:
             })
         return results
 
+    async def discover_groups(self, query: str, limit: int = 10) -> list[dict]:
+        if not self.client:
+            raise RuntimeError("Telegram account is not linked")
+        found = {}
+        async for msg in self.client.iter_messages(None, search=query, limit=min(max(limit * 5, 10), 50)):
+            chat = await msg.get_chat()
+            username = getattr(chat, "username", None)
+            is_group = bool(getattr(chat, "megagroup", False)) or chat.__class__.__name__ == "Chat"
+            if not is_group:
+                continue
+            key = getattr(chat, "id", None) or username
+            if key in found:
+                continue
+            found[key] = {
+                "chat_id": getattr(chat, "id", None),
+                "title": getattr(chat, "title", None) or username,
+                "username": username,
+                "participants": getattr(chat, "participants_count", None),
+            }
+            if len(found) >= max(1, min(limit, 20)):
+                break
+        return list(found.values())
+
+    async def join_chat(self, target: str) -> dict:
+        if not self.client:
+            raise RuntimeError("Telegram account is not linked")
+        target = (target or "").strip()
+        if not target:
+            raise ValueError("Target is empty")
+
+        if "t.me/+" in target:
+            invite_hash = target.rstrip("/").split("t.me/+", 1)[1].split("?", 1)[0]
+            updates = await self.client(functions.messages.ImportChatInviteRequest(invite_hash))
+            self.db.incr("groups_joined")
+            return {"ok": True, "kind": "invite", "target": target, "updates": str(updates)[:500]}
+
+        if target.startswith("https://t.me/"):
+            target = target.rstrip("/").split("t.me/", 1)[1].split("?", 1)[0]
+        if target.startswith("@"):
+            target = target[1:]
+
+        entity = await self.client.get_entity(target)
+        await self.client(functions.channels.JoinChannelRequest(entity))
+        self.db.incr("groups_joined")
+        return {
+            "ok": True,
+            "kind": "public",
+            "target": target,
+            "title": getattr(entity, "title", None) or target,
+        }
+
+    async def leave_chat(self, target: str) -> dict:
+        if not self.client:
+            raise RuntimeError("Telegram account is not linked")
+        if "t.me/+" in target:
+            raise ValueError("Use the group's username or chat id to leave an invite-created group.")
+        clean = target.strip().rstrip("/").split("t.me/", 1)[-1]
+        clean = clean[1:] if clean.startswith("@") else clean
+        entity = await self.client.get_entity(clean)
+        if getattr(entity, "megagroup", False) or entity.__class__.__name__ == "Chat":
+            await self.client(functions.channels.LeaveChannelRequest(entity))
+        else:
+            await self.client(functions.messages.DeleteChatUserRequest(
+                user_id=await self.client.get_me(),
+                chat_id=entity,
+            ))
+        return {"ok": True, "target": clean}
+
     async def recent(self, chat_id, limit: int = 15) -> list[dict]:
         if not self.client:
             raise RuntimeError("Telegram account is not linked")
-        messages = await self.client.get_messages(chat_id, limit=min(max(limit, 1), 30))
+        messages = await self.client.get_messages(
+            chat_id,
+            limit=min(max(limit, 1), 30),
+        )
         return [{
             "id": m.id,
             "date": m.date.isoformat() if m.date else None,
