@@ -13,7 +13,7 @@ from .telegram_user import TelegramUser
 
 
 class GeminiAgent:
-    def __init__(self, api_key: str, model: str, telegram: TelegramUser, db: Database, max_steps: int = 8):
+    def __init__(self, api_key: str, model: str, telegram: TelegramUser, db: Database, max_steps: int = 3):
         self.client = genai.Client(api_key=api_key, vertexai=False)
         self.model = model
         self.telegram = telegram
@@ -87,11 +87,7 @@ class GeminiAgent:
                 },
             },
         ]
-        return [
-            types.Tool(google_search=types.GoogleSearch()),
-            types.Tool(url_context=types.UrlContext()),
-            types.Tool(function_declarations=declarations),
-        ]
+        return [types.Tool(function_declarations=declarations)]
 
     async def _notify(self, text: str) -> None:
         self.db.log(text)
@@ -105,6 +101,7 @@ class GeminiAgent:
         config = types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
             tools=self._tool_specs(),
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
         return await asyncio.to_thread(
             self.client.models.generate_content,
@@ -146,11 +143,11 @@ class GeminiAgent:
         async with self._lock:
             text = user_input
             if context:
-                text += "\\n\\nCURRENT CONTEXT:\\n" + json.dumps(
+                text += "\n\nCURRENT CONTEXT:\n" + json.dumps(
                     context, ensure_ascii=False, default=str
                 )
-            if len(self._history) > 40:
-                self._history = self._history[-40:]
+            if len(self._history) > 20:
+                self._history = self._history[-20:]
             self._history.append(types.Content(role="user", parts=[types.Part(text=text)]))
 
             for _ in range(self.max_steps):
