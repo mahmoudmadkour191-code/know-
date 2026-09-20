@@ -35,11 +35,12 @@ class Settings:
     gemini_api_key: str
     session_encryption_key: str
     gemini_model: str = DEFAULT_GEMINI_MODEL
-    max_agent_steps: int = 3
+    max_agent_steps: int = 5
     autonomous_interval_seconds: int = 600
     message_debounce_seconds: int = 3
     respond_to_group_mentions: bool = True
     allow_autonomous_outbound: bool = True
+    browser_enabled: bool = True
     data_dir: str = "data"
 
     @classmethod
@@ -56,14 +57,6 @@ class Settings:
         if missing:
             raise RuntimeError("Missing environment variables: " + ", ".join(missing))
 
-        requested_model = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
-        # Force the free-tier-safe agent model. This prevents an old Railway
-        # variable (e.g. gemini-3.8-flash) from silently putting the agent
-        # back on the exhausted model/quota.
-        gemini_model = DEFAULT_GEMINI_MODEL
-        if requested_model == DEFAULT_GEMINI_MODEL:
-            gemini_model = requested_model
-
         return cls(
             control_bot_token=os.environ["CONTROL_BOT_TOKEN"],
             owner_id=int(os.environ["OWNER_ID"]),
@@ -71,10 +64,12 @@ class Settings:
             telegram_api_hash=os.environ["TELEGRAM_API_HASH"],
             gemini_api_key=os.environ["GEMINI_API_KEY"],
             session_encryption_key=os.environ["SESSION_ENCRYPTION_KEY"],
-            gemini_model=gemini_model,
-            max_agent_steps=3,
+            gemini_model=DEFAULT_GEMINI_MODEL,
+            max_agent_steps=max(1, _int("MAX_AGENT_STEPS", 5)),
             autonomous_interval_seconds=max(_int("AUTONOMOUS_INTERVAL_SECONDS", 600), 600),
             message_debounce_seconds=_int("MESSAGE_DEBOUNCE_SECONDS", 3),
             respond_to_group_mentions=_bool("RESPOND_TO_GROUP_MENTIONS", True),
             allow_autonomous_outbound=_bool("ALLOW_AUTONOMOUS_OUTBOUND", True),
+            browser_enabled=_bool("BROWSER_ENABLED", True),
+            data_dir=os.getenv("DATA_DIR", "data").strip() or "data",
         )
