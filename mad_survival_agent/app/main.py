@@ -30,7 +30,14 @@ async def main() -> None:
         on_incoming=on_incoming,
         on_flood_wait=on_flood_wait,
     )
-    gemini = GeminiAgent(settings.gemini_api_key, settings.gemini_model, telegram, db, settings.max_agent_steps)
+    gemini = GeminiAgent(
+        settings.gemini_api_key,
+        settings.gemini_model,
+        telegram,
+        db,
+        settings.max_agent_steps,
+        data_dir=settings.data_dir,
+    )
     agent = SurvivalAgent(
         telegram,
         gemini,
@@ -46,6 +53,7 @@ async def main() -> None:
     finally:
         await agent.stop()
         await telegram.disconnect()
+        await gemini.browser.close()
 
 
 if __name__ == "__main__":
