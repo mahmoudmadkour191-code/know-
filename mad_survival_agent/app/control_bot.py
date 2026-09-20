@@ -78,7 +78,7 @@ class ControlBot:
             f"الحساب: {'✅ مربوط' if linked else '❌ غير مربوط'}\n"
             f"الحالة: {self.agent.status}\n"
             f"وقت التشغيل: {h:02d}:{m:02d}:{sec:02d}\n"
-            f"💰 الرصيد: $\{s['cash']:.2f}\n"
+            f"💰 الرصيد: $${s['cash']:.2f}\n"
             f"🎯 فرص: {int(s['jobs_found'])} | تواصل: {int(s['jobs_contacted'])}\n"
             f"✅ مكتمل: {int(s['jobs_completed'])} | ❌ فشل: {int(s['jobs_failed'])}\n"
             f"📨 رسائل: {int(s['messages_sent'])}\n\n"
