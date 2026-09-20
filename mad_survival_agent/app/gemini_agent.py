@@ -5,6 +5,7 @@ import json
 from typing import Any, Awaitable, Callable
 
 from google import genai
+from google.genai import types
 
 from .db import Database
 from .prompt import SYSTEM_PROMPT
@@ -18,39 +19,78 @@ class GeminiAgent:
         self.telegram = telegram
         self.db = db
         self.max_steps = max_steps
-        self._interaction_id: str | None = None
         self._lock = asyncio.Lock()
         self.on_activity: Callable[[str], Awaitable[None]] | None = None
+        self._history: list[types.Content] = []
 
-    def _tool_specs(self) -> list[dict[str, Any]]:
+    def _tool_specs(self) -> list[types.Tool]:
+        declarations = [
+            {
+                "name": "telegram_global_search",
+                "description": "Search messages visible to this Telegram account across Telegram for legitimate public opportunities or context.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 25},
+                    },
+                    "required": ["query"],
+                },
+            },
+            {
+                "name": "telegram_recent_messages",
+                "description": "Read recent messages in a known chat before responding.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "chat_id": {"type": "integer"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 30},
+                    },
+                    "required": ["chat_id"],
+                },
+            },
+            {
+                "name": "send_telegram_message",
+                "description": "Send one targeted Telegram message to a specific chat. Use only when useful and appropriate.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "chat_id": {"type": "integer"},
+                        "text": {"type": "string"},
+                        "reply_to": {"type": "integer"},
+                    },
+                    "required": ["chat_id", "text"],
+                },
+            },
+            {
+                "name": "record_income",
+                "description": "Record legitimate received income. Never invent a payment.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "amount": {"type": "number"},
+                        "note": {"type": "string"},
+                    },
+                    "required": ["amount", "note"],
+                },
+            },
+            {
+                "name": "record_expense",
+                "description": "Record a legitimate experiment expense. Never invent an expense.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "amount": {"type": "number"},
+                        "note": {"type": "string"},
+                    },
+                    "required": ["amount", "note"],
+                },
+            },
+        ]
         return [
-            {"type": "google_search"},
-            {"type": "url_context"},
-            {"type": "function", "name": "telegram_global_search",
-             "description": "Search messages visible to this Telegram account across Telegram for legitimate public opportunities or context.",
-             "parameters": {"type": "object", "properties": {
-                 "query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 25}
-             }, "required": ["query"]}},
-            {"type": "function", "name": "telegram_recent_messages",
-             "description": "Read recent messages in a known chat before responding.",
-             "parameters": {"type": "object", "properties": {
-                 "chat_id": {"type": "integer"}, "limit": {"type": "integer", "minimum": 1, "maximum": 30}
-             }, "required": ["chat_id"]}},
-            {"type": "function", "name": "send_telegram_message",
-             "description": "Send one targeted Telegram message to a specific chat. Use only when useful and appropriate.",
-             "parameters": {"type": "object", "properties": {
-                 "chat_id": {"type": "integer"}, "text": {"type": "string"}, "reply_to": {"type": "integer"}
-             }, "required": ["chat_id", "text"]}},
-            {"type": "function", "name": "record_income",
-             "description": "Record legitimate received income. Never invent a payment.",
-             "parameters": {"type": "object", "properties": {
-                 "amount": {"type": "number"}, "note": {"type": "string"}
-             }, "required": ["amount", "note"]}},
-            {"type": "function", "name": "record_expense",
-             "description": "Record a legitimate experiment expense. Never invent an expense.",
-             "parameters": {"type": "object", "properties": {
-                 "amount": {"type": "number"}, "note": {"type": "string"}
-             }, "required": ["amount", "note"]}},
+            types.Tool(google_search=types.GoogleSearch()),
+            types.Tool(url_context=types.UrlContext()),
+            types.Tool(function_declarations=declarations),
         ]
 
     async def _notify(self, text: str) -> None:
@@ -61,8 +101,17 @@ class GeminiAgent:
             except Exception:
                 pass
 
-    async def _call_model(self, **kwargs):
-        return await asyncio.to_thread(self.client.interactions.create, **kwargs)
+    async def _call_model(self, contents: list[types.Content]):
+        config = types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            tools=self._tool_specs(),
+        )
+        return await asyncio.to_thread(
+            self.client.models.generate_content,
+            model=self.model,
+            contents=contents,
+            config=config,
+        )
 
     async def _execute_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         if name == "telegram_global_search":
@@ -81,7 +130,7 @@ class GeminiAgent:
             if amount <= 0:
                 return {"ok": False, "error": "Income amount must be positive."}
             self.db.incr("cash", amount)
-            self.db.log(f"Income +${amount:.2f}: {args['note']}")
+            self.db.log("Income +$%.2f: %s" % (amount, args["note"]))
             self.db.incr("jobs_completed")
             return {"ok": True, "cash": self.db.stat("cash")}
         if name == "record_expense":
@@ -89,65 +138,55 @@ class GeminiAgent:
             if amount <= 0 or amount > self.db.stat("cash"):
                 return {"ok": False, "error": "Expense exceeds available experiment cash."}
             self.db.incr("cash", -amount)
-            self.db.log(f"Expense -${amount:.2f}: {args['note']}")
+            self.db.log("Expense -$%.2f: %s" % (amount, args["note"]))
             return {"ok": True, "cash": self.db.stat("cash")}
-        return {"ok": False, "error": f"Unknown tool: {name}"}
-
-    def _extract_output_text(self, interaction) -> str:
-        text = getattr(interaction, "output_text", None)
-        if text:
-            return text.strip()
-        chunks: list[str] = []
-        for step in getattr(interaction, "steps", []) or []:
-            if getattr(step, "type", None) == "model_output":
-                for content in getattr(step, "content", []) or []:
-                    if getattr(content, "type", None) == "text":
-                        chunks.append(getattr(content, "text", ""))
-        return "\n".join(x for x in chunks if x).strip()
+        return {"ok": False, "error": "Unknown tool: %s" % name}
 
     async def run(self, user_input: str, context: dict[str, Any] | None = None) -> str:
         async with self._lock:
-            payload = user_input
+            text = user_input
             if context:
-                payload += "\n\nCURRENT CONTEXT:\n" + json.dumps(context, ensure_ascii=False, default=str)
-            kwargs: dict[str, Any] = {
-                "model": self.model, "input": payload,
-                "tools": self._tool_specs(), "system_instruction": SYSTEM_PROMPT,
-            }
-            if self._interaction_id:
-                kwargs["previous_interaction_id"] = self._interaction_id
-            interaction = await self._call_model(**kwargs)
+                text += "\\n\\nCURRENT CONTEXT:\\n" + json.dumps(
+                    context, ensure_ascii=False, default=str
+                )
+            if len(self._history) > 40:
+                self._history = self._history[-40:]
+            self._history.append(types.Content(role="user", parts=[types.Part(text=text)]))
 
             for _ in range(self.max_steps):
+                response = await self._call_model(self._history)
+                if not response.candidates:
+                    return "تمام، حصلت مشكلة مؤقتة في استجابة النموذج."
+
+                model_content = response.candidates[0].content
                 calls = [
-                    s for s in (getattr(interaction, "steps", []) or [])
-                    if getattr(s, "type", None) == "function_call"
+                    part.function_call
+                    for part in (model_content.parts or [])
+                    if getattr(part, "function_call", None)
                 ]
-                self._interaction_id = interaction.id
+                self._history.append(model_content)
+
                 if not calls:
-                    break
-                await self._notify("Tool calls: " + ", ".join(getattr(c, "name", "?") for c in calls))
-                results = []
+                    return (response.text or "تمام، هراجع الموضوع وأتحرك لما يكون عندي خطوة مفيدة.")[:4000]
+
+                await self._notify(
+                    "Tool calls: " + ", ".join(getattr(c, "name", "?") for c in calls)
+                )
+
                 for call in calls:
                     try:
-                        args = getattr(call, "arguments", {}) or {}
+                        args = dict(call.args or {})
                         result = await self._execute_tool(call.name, args)
                     except Exception as exc:
                         result = {"ok": False, "error": str(exc)}
-                    results.append({
-                        "type": "function_result",
-                        "name": call.name,
-                        "call_id": call.id,
-                        "result": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, default=str)}],
-                    })
-                interaction = await self._call_model(
-                    model=self.model,
-                    previous_interaction_id=self._interaction_id,
-                    input=results,
-                    tools=self._tool_specs(),
-                    system_instruction=SYSTEM_PROMPT,
-                )
 
-            self._interaction_id = getattr(interaction, "id", self._interaction_id)
-            text = self._extract_output_text(interaction)
-            return (text or "تمام، هراجع الموضوع وأتحرك لما يكون عندي خطوة مفيدة.")[:4000]
+                    fn_part = types.Part.from_function_response(
+                        name=call.name,
+                        response={"result": result},
+                        id=call.id,
+                    )
+                    self._history.append(
+                        types.Content(role="user", parts=[fn_part])
+                    )
+
+            return "تمام، هراجع الموضوع وأتحرك لما يكون عندي خطوة مفيدة."
