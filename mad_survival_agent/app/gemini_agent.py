@@ -139,6 +139,18 @@ class GeminiAgent:
             return {"ok": True, "cash": self.db.stat("cash")}
         return {"ok": False, "error": "Unknown tool: %s" % name}
 
+    def _function_response_part(
+        self,
+        call: types.FunctionCall,
+        result: dict[str, Any],
+    ) -> types.Part:
+        response = types.FunctionResponse(
+            name=call.name,
+            response={"result": result},
+            id=getattr(call, "id", None),
+        )
+        return types.Part(function_response=response)
+
     async def run(self, user_input: str, context: dict[str, Any] | None = None) -> str:
         async with self._lock:
             text = user_input
@@ -177,13 +189,11 @@ class GeminiAgent:
                     except Exception as exc:
                         result = {"ok": False, "error": str(exc)}
 
-                    fn_part = types.Part.from_function_response(
-                        name=call.name,
-                        response={"result": result},
-                        id=call.id,
-                    )
                     self._history.append(
-                        types.Content(role="user", parts=[fn_part])
+                        types.Content(
+                            role="user",
+                            parts=[self._function_response_part(call, result)],
+                        )
                     )
 
             return "تمام، هراجع الموضوع وأتحرك لما يكون عندي خطوة مفيدة."
