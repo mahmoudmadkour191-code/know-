@@ -77,6 +77,10 @@ class Database:
         return float(row["value"]) if row else default
 
     def snapshot(self) -> dict[str, Any]:
+        try:
+            sleep_until = float(self.get("gemini_sleep_until", "0") or "0")
+        except ValueError:
+            sleep_until = 0.0
         return {
             "cash": self.stat("cash", 0),
             "jobs_found": self.stat("jobs_found", 0),
@@ -84,4 +88,8 @@ class Database:
             "jobs_completed": self.stat("jobs_completed", 0),
             "jobs_failed": self.stat("jobs_failed", 0),
             "messages_sent": self.stat("messages_sent", 0),
+            "groups_joined": self.stat("groups_joined", 0),
+            "gemini_requests": self.stat("gemini_requests", 0),
+            "gemini_tokens": self.stat("gemini_tokens", 0),
+            "gemini_sleep_until": sleep_until,
         }
