@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from dotenv import load_dotenv
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+if load_dotenv:
+    load_dotenv()
 
 
 def _int(name: str, default: int) -> int:
