@@ -261,6 +261,12 @@ class GeminiAgent:
         )
         return max(300, int((tomorrow - now).total_seconds()))
 
+    def _ensure_token_day(self) -> None:
+        today = datetime.now(ZoneInfo("America/Los_Angeles")).date().isoformat()
+        if self.db.get("gemini_token_day") != today:
+            self.db.set("gemini_token_day", today)
+            self.db.set("gemini_tokens_today_reset", "0")
+
     def _usage_tokens(self, response) -> int:
         usage = getattr(response, "usage_metadata", None)
         if not usage:
@@ -299,12 +305,14 @@ class GeminiAgent:
                 raise QuotaSleep(message) from exc
             raise
 
+        self._ensure_token_day()
         tokens = self._usage_tokens(response)
         if tokens:
-            self.db.incr("gemini_tokens", tokens)
+            self.db.incr("gemini_tokens_total", tokens)
+            self.db.incr("gemini_tokens_today", tokens)
         self.db.incr("gemini_requests")
 
-        total_today = self.db.stat("gemini_tokens")
+        total_today = self.db.stat("gemini_tokens_today")
         if total_today >= self.daily_token_budget:
             self._set_sleep(self._sleep_until_next_pacific_midnight(), "application token safety budget reached")
 
